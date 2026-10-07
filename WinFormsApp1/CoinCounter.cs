@@ -22,8 +22,12 @@ namespace WinFormsApp1
                 for (int x = 0; x < w; x++)
                     fg[x, y] = gray[x, y] < thr;
 
-            // Close small gaps/lettering via box close (r=7) using integral image.
-            fg = BoxClose(fg, w, h, 7);
+            // Close small gaps/lettering via box close using integral image.
+            // Radius adapts to image scale: big scans need wide close to
+            // merge coin lettering, small dense shots need narrow to avoid
+            // fusing neighboring coins into one blob.
+            int closeR = Math.Clamp(Math.Min(w, h) / 220, 2, 7);
+            fg = BoxClose(fg, w, h, closeR);
             // Fill holes for outer shape, but keep raw copy for hole detection.
             bool[,] filled = FillHoles(fg, w, h);
 
