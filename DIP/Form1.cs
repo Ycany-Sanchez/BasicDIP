@@ -14,9 +14,11 @@ namespace DIP
 
         private void SetProcessed(Bitmap bmp, string message)
         {
-            _processed?.Dispose();
+            var old = _processed;
+            pictureBoxProcessed.Image = null;
             _processed = bmp;
             pictureBoxProcessed.Image = _processed;
+            old?.Dispose();
             lblStatus.Text = message;
         }
 
@@ -37,8 +39,12 @@ namespace DIP
             dlg.Filter = "Images|*.bmp;*.png;*.jpg;*.jpeg;*.tif;*.tiff|All files|*.*";
             if (dlg.ShowDialog() != DialogResult.OK) return;
 
+            pictureBoxOriginal.Image = null;
+            pictureBoxProcessed.Image = null;
             _original?.Dispose();
             _processed?.Dispose();
+            _original = null;
+            _processed = null;
             _original = new Bitmap(dlg.FileName);
             _processed = new Bitmap(_original);
             pictureBoxOriginal.Image = _original;
@@ -50,10 +56,12 @@ namespace DIP
         {
             if (_processed == null) { RequireImage(); return; }
             using var dlg = new SaveFileDialog();
-            dlg.Filter = "PNG|*.png|BMP|*.bmp|JPEG|*.jpg";
+            dlg.Filter = "PNG|*.png|BMP|*.bmp|JPEG|*.jpg;*.jpeg";
             dlg.FileName = "processed.png";
             if (dlg.ShowDialog() != DialogResult.OK) return;
-            _processed.Save(dlg.FileName, ImageFormat.Png);
+            var ext = Path.GetExtension(dlg.FileName).ToLowerInvariant();
+            var fmt = ext == ".bmp" ? ImageFormat.Bmp : ext == ".jpg" || ext == ".jpeg" ? ImageFormat.Jpeg : ImageFormat.Png;
+            _processed.Save(dlg.FileName, fmt);
             lblStatus.Text = $"Saved {dlg.FileName}";
         }
 

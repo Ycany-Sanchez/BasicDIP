@@ -19,9 +19,13 @@
 
         protected override void Dispose(bool disposing)
         {
-            if (disposing && (components != null))
+            if (disposing)
             {
-                components.Dispose();
+                components?.Dispose();
+                pictureBoxOriginal.Image = null;
+                pictureBoxProcessed.Image = null;
+                _original?.Dispose();
+                _processed?.Dispose();
             }
             base.Dispose(disposing);
         }
