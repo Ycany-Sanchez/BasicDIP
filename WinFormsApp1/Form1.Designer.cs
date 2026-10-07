@@ -17,6 +17,7 @@
         private ToolStripMenuItem contrastToolStripMenuItem;
         private ToolStripMenuItem scaleToolStripMenuItem;
         private ToolStripMenuItem binaryToolStripMenuItem;
+        private ToolStripMenuItem coinCountToolStripMenuItem;
         private TrackBar trackBar1;
         private TrackBar trackContrast;
         private NumericUpDown numThreshold;
@@ -59,6 +60,7 @@
             contrastToolStripMenuItem = new ToolStripMenuItem();
             scaleToolStripMenuItem = new ToolStripMenuItem();
             binaryToolStripMenuItem = new ToolStripMenuItem();
+            coinCountToolStripMenuItem = new ToolStripMenuItem();
             trackBar1 = new TrackBar();
             trackContrast = new TrackBar();
             numThreshold = new NumericUpDown();
@@ -114,7 +116,8 @@
             filtersToolStripMenuItem.DropDownItems.AddRange(new ToolStripItem[] {
                 pixelCopyToolStripMenuItem, greyscalingToolStripMenuItem, inversionToolStripMenuItem,
                 mirrorHorizToolStripMenuItem, mirrorVertToolStripMenuItem, histToolStripMenuItem,
-                contrastToolStripMenuItem, scaleToolStripMenuItem, binaryToolStripMenuItem });
+                contrastToolStripMenuItem, scaleToolStripMenuItem, binaryToolStripMenuItem,
+                coinCountToolStripMenuItem });
             filtersToolStripMenuItem.Name = "filtersToolStripMenuItem";
             filtersToolStripMenuItem.Size = new Size(50, 20);
             filtersToolStripMenuItem.Text = "DIP";
@@ -130,6 +133,7 @@
             contrastToolStripMenuItem.Name = "contrastToolStripMenuItem"; contrastToolStripMenuItem.Size = new Size(180, 22); contrastToolStripMenuItem.Text = "contrast"; contrastToolStripMenuItem.Click += contrastToolStripMenuItem_Click;
             scaleToolStripMenuItem.Name = "scaleToolStripMenuItem"; scaleToolStripMenuItem.Size = new Size(180, 22); scaleToolStripMenuItem.Text = "scale"; scaleToolStripMenuItem.Click += scaleToolStripMenuItem_Click;
             binaryToolStripMenuItem.Name = "binaryToolStripMenuItem"; binaryToolStripMenuItem.Size = new Size(180, 22); binaryToolStripMenuItem.Text = "binary"; binaryToolStripMenuItem.Click += binaryToolStripMenuItem_Click;
+            coinCountToolStripMenuItem.Name = "coinCountToolStripMenuItem"; coinCountToolStripMenuItem.Size = new Size(180, 22); coinCountToolStripMenuItem.Text = "coin count"; coinCountToolStripMenuItem.Click += coinCountToolStripMenuItem_Click;
             //
             // trackContrast (left)
             //

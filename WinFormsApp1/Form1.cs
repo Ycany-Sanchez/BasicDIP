@@ -150,6 +150,16 @@ namespace WinFormsApp1
             SetProcessed(b, $"Binary threshold {(int)numThreshold.Value} applied.");
         }
 
+        private void coinCountToolStripMenuItem_Click(object sender, EventArgs e)
+        {
+            if (!RequireImage()) return;
+            var result = CoinCounter.CountCoins(new Bitmap(loaded!));
+            SetProcessed(result.Annotated,
+                $"5c:{result.Count5C} 10c:{result.Count10C} 25c:{result.Count25C} P1:{result.Count1P} P5:{result.Count5P} = P{result.Total:F2}");
+            MessageBox.Show(result.Summary, "Coin count",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+
         private void trackBar1_Scroll(object sender, EventArgs e)
         {
             if (!RequireImage()) return;
