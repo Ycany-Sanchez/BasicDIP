@@ -122,7 +122,7 @@ namespace HNUDIP
 
         public static void Rotate(ref Bitmap a, ref Bitmap b, int value)
         {
-            float angleRadians = (float)value;
+            float angleRadians = (float)(value * Math.PI / 180);
             int xCenter = (int)(a.Width / 2);
             int yCenter = (int)(a.Height / 2);
             int width, height, xs, ys, xp, yp, x0, y0;

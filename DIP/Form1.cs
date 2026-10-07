@@ -88,7 +88,7 @@ namespace DIP
             Bitmap a = _processed ?? _original!;
             Bitmap b = new Bitmap(1, 1);
             var src = new Bitmap(a);
-            BasicDIP.Brightness(ref src, ref b, 30);
+            HNUDIP.ImageProcess.Brightness(ref src, ref b, 30);
             SetProcessed(b, "Brightness +30.");
         }
 
@@ -98,7 +98,7 @@ namespace DIP
             Bitmap a = _processed ?? _original!;
             Bitmap b = new Bitmap(1, 1);
             var src = new Bitmap(a);
-            BasicDIP.Brightness(ref src, ref b, -30);
+            HNUDIP.ImageProcess.Brightness(ref src, ref b, -30);
             SetProcessed(b, "Brightness -30.");
         }
 
@@ -107,7 +107,7 @@ namespace DIP
             if (!RequireImage()) return;
             Bitmap a = new Bitmap(_original!);
             Bitmap b = new Bitmap(1, 1);
-            BasicDIP.Hist(ref a, ref b);
+            HNUDIP.ImageProcess.Histogram(ref a, ref b);
             SetProcessed(b, "Histogram generated.");
         }
 
@@ -116,7 +116,7 @@ namespace DIP
             if (!RequireImage()) return;
             Bitmap a = new Bitmap(_processed ?? _original!);
             Bitmap b = new Bitmap(1, 1);
-            BasicDIP.rotate(ref a, ref b, 90);
+            HNUDIP.ImageProcess.Rotate(ref a, ref b, 90);
             SetProcessed(b, "Rotated 90 deg.");
         }
     }
