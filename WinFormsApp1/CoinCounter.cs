@@ -12,6 +12,9 @@ namespace WinFormsApp1
         private static readonly double[] Values = { 0.05, 0.10, 0.25, 1.0, 5.0 };
         private static readonly string[] Names = { "5c", "10c", "25c", "P1", "P5" };
 
+        /// <summary>Human-readable reject log from the last <see cref="CountCoins"/> call.</summary>
+        public static IReadOnlyList<string> LastRejects { get; private set; } = Array.Empty<string>();
+
         public static CoinCountResult CountCoins(Bitmap source)
         {
             int w = source.Width, h = source.Height;
@@ -27,47 +30,74 @@ namespace WinFormsApp1
             // merge coin lettering, small dense shots need narrow to avoid
             // fusing neighboring coins into one blob.
             int closeR = Math.Clamp(Math.Min(w, h) / 220, 2, 7);
-            fg = BoxClose(fg, w, h, closeR);
+            // Pad with background so edge coins don't get pushed into the
+            // image border by the close (the left 25c in coins.png sits ~2px
+            // from the edge; dilate r=2 made it touch and get rejected).
+            int pad = closeR + 6;
+            int wp = w + pad * 2, hp = h + pad * 2;
+            bool[,] fgPad = new bool[wp, hp];
+            for (int y = 0; y < h; y++)
+                for (int x = 0; x < w; x++)
+                    fgPad[x + pad, y + pad] = fg[x, y];
+            bool[,] rawPad = (bool[,])fgPad.Clone();
+            bool[,] closedPad = BoxClose(fgPad, wp, hp, closeR);
             // Fill holes for outer shape, but keep raw copy for hole detection.
-            bool[,] filled = FillHoles(fg, w, h);
+            bool[,] filledPad = FillHoles(closedPad, wp, hp);
 
-            var comps = Label(filled, fg, w, h);
+            var compsPad = Label(filledPad, closedPad, wp, hp);
+            // Map back to original coords for annotation/rejects.
+            var comps = new List<Comp>();
+            foreach (var c in compsPad)
+            {
+                c.MinX -= pad; c.MinY -= pad; c.MaxX -= pad; c.MaxY -= pad;
+                // Truly truncated only if raw coin pixels touch the photo edge.
+                c.TouchesBorder = TouchesRawBorder(rawPad, wp, hp, pad, c);
+                comps.Add(c);
+            }
             // Drop specks, border artifacts and non-coin blobs (caption text:
             // tiny bbox fill ratio). Split merged touching coins via aspect.
             double imgArea = (double)w * h;
-            var found = new List<Comp>();
+            var rejects = new List<string>();
+            var blobs = new List<Comp>();
             foreach (var c in comps)
             {
-                if (c.FilledArea < imgArea * 0.0004 || c.TouchesBorder) continue;
-                int bw = c.MaxX - c.MinX + 1, bh = c.MaxY - c.MinY + 1;
-                if (c.FilledArea / (double)(bw * bh) < 0.55) continue;
-                double aspect = Math.Max(bw, bh) / (double)Math.Min(bw, bh);
+                int bw0 = c.MaxX - c.MinX + 1, bh0 = c.MaxY - c.MinY + 1;
+                if (c.FilledArea < imgArea * 0.0004) { rejects.Add($"speck area={c.FilledArea} bbox=({c.MinX},{c.MinY})-({c.MaxX},{c.MaxY})"); continue; }
+                if (c.TouchesBorder) { rejects.Add($"border d~{c.Diameter:F0} bbox=({c.MinX},{c.MinY})-({c.MaxX},{c.MaxY})"); continue; }
+                double fillRatio = c.FilledArea / (double)(bw0 * bh0);
+                if (fillRatio < 0.55) { rejects.Add($"non-round fill={fillRatio:F2} area={c.FilledArea} bbox=({c.MinX},{c.MinY})-({c.MaxX},{c.MaxY})"); continue; }
+                double aspect = Math.Max(bw0, bh0) / (double)Math.Min(bw0, bh0);
                 if (aspect > 1.4)
                 {
-                    double single = Math.PI * Math.Pow(Math.Min(bw, bh) / 2.0, 2);
-                    int n = Math.Clamp((int)Math.Round(c.FilledArea / single), 2, 4);
-                    double dEff = Math.Sqrt(4.0 * (c.FilledArea / (double)n) / Math.PI);
-                    for (int k = 0; k < n; k++)
-                        found.Add(new Comp { FilledArea = c.FilledArea / n, RawArea = c.RawArea / n, MinX = c.MinX, MinY = c.MinY, MaxX = c.MaxX, MaxY = c.MaxY, DiameterOverride = dEff });
+                    double single = Math.PI * Math.Pow(Math.Min(bw0, bh0) / 2.0, 2);
+                    c.SplitCount = Math.Clamp((int)Math.Round(c.FilledArea / single), 2, 4);
+                    c.DiameterOverride = Math.Sqrt(4.0 * (c.FilledArea / (double)c.SplitCount) / Math.PI);
                 }
-                else found.Add(c);
+                blobs.Add(c);
             }
-            if (found.Count == 0)
+            LastRejects = rejects;
+            if (blobs.Count == 0)
                 return new CoinCountResult(0, 0, 0, 0, 0, 0, new Bitmap(source), "No coins found.");
 
-            // Sort by diameter, split into 5 groups at 4 largest gaps.
-            found.Sort((a, b) => a.DEff.CompareTo(b.DEff));
-            int[] bounds = FindGroupBounds(found.Select(c => c.DEff).ToArray(), 5);
+            // One entry per coin (splits contribute N identical entries),
+            // sorted by diameter, split into 5 groups at 4 largest gaps.
+            var entries = new List<(Comp owner, double d)>();
+            foreach (var c in blobs)
+                for (int k = 0; k < Math.Max(1, c.SplitCount); k++)
+                    entries.Add((c, c.DEff));
+            entries.Sort((a, b) => a.d.CompareTo(b.d));
+            int[] bounds = FindGroupBounds(entries.Select(e => e.d).ToArray(), 5);
             int[] counts = new int[5];
-            for (int i = 0; i < found.Count; i++)
+            for (int i = 0; i < entries.Count; i++)
             {
                 int g = GroupOf(i, bounds);
-                found[i].Group = g;
+                entries[i].owner.Group = g;
                 counts[g]++;
             }
 
             // 5c cross-check: smallest group should hold the holed coins.
             // (Hole flag kept for summary; size drives the verdict per evenly-spaced spec.)
+            int nCoins = entries.Count;
             double total = counts[0] * Values[0] + counts[1] * Values[1] + counts[2] * Values[2]
                 + counts[3] * Values[3] + counts[4] * Values[4];
 
@@ -77,14 +107,33 @@ namespace WinFormsApp1
             using (var font = new Font("Arial", Math.Max(10, w / 60)))
             using (var brush = new SolidBrush(Color.Yellow))
             {
-                foreach (var c in found)
+                foreach (var c in blobs)
                 {
-                    g.DrawEllipse(pen, c.MinX, c.MinY, c.MaxX - c.MinX, c.MaxY - c.MinY);
-                    g.DrawString(Names[c.Group], font, brush, c.MinX, c.MinY);
+                    if (c.SplitCount > 1)
+                    {
+                        // Draw N side-by-side circles along the long axis.
+                        int bw = c.MaxX - c.MinX + 1, bh = c.MaxY - c.MinY + 1;
+                        bool vertical = bh >= bw;
+                        double d = c.DEff;
+                        double cx = (c.MinX + c.MaxX) / 2.0, cy = (c.MinY + c.MaxY) / 2.0;
+                        for (int k = 0; k < c.SplitCount; k++)
+                        {
+                            double off = (k - (c.SplitCount - 1) / 2.0) * d;
+                            float x = (float)(vertical ? cx - d / 2 : cx + off - d / 2);
+                            float y = (float)(vertical ? cy + off - d / 2 : cy - d / 2);
+                            g.DrawEllipse(pen, x, y, (float)d, (float)d);
+                        }
+                        g.DrawString(Names[c.Group] + "x" + c.SplitCount, font, brush, c.MinX, c.MinY);
+                    }
+                    else
+                    {
+                        g.DrawEllipse(pen, c.MinX, c.MinY, c.MaxX - c.MinX, c.MaxY - c.MinY);
+                        g.DrawString(Names[c.Group], font, brush, c.MinX, c.MinY);
+                    }
                 }
             }
 
-            string summary = $"5c:{counts[0]} 10c:{counts[1]} 25c:{counts[2]} P1:{counts[3]} P5:{counts[4]} = P{total:F2} (n={found.Count}, otsu={thr})";
+            string summary = $"5c:{counts[0]} 10c:{counts[1]} 25c:{counts[2]} P1:{counts[3]} P5:{counts[4]} = P{total:F2} (n={nCoins}, otsu={thr})";
             return new CoinCountResult(counts[0], counts[1], counts[2], counts[3], counts[4], total, annotated, summary);
         }
 
@@ -97,6 +146,8 @@ namespace WinFormsApp1
             public double? DiameterOverride;
             public double DEff => DiameterOverride ?? Diameter;
             public bool HasHole => (FilledArea - RawArea) > FilledArea * 0.02;
+            /// <summary>Set on original blobs merged from N coins.</summary>
+            public int SplitCount;
         }
 
         private static byte[,] ToGrayscale(Bitmap bmp)
@@ -234,6 +285,43 @@ namespace WinFormsApp1
                 for (int x = 0; x < w; x++)
                     out_[x, y] = fg[x, y] || !seen[x, y];
             return out_;
+        }
+
+        private static bool TouchesRawBorder(bool[,] rawPad, int wp, int hp, int pad, Comp c)
+        {
+            // Blob bbox is in original coords; convert to padded for raw lookup.
+            int minXp = c.MinX + pad, maxXp = c.MaxX + pad;
+            int minYp = c.MinY + pad, maxYp = c.MaxY + pad;
+            // Original photo edges in padded coords.
+            int left = pad, right = pad + (wp - pad * 2) - 1;
+            int top = pad, bottom = pad + (hp - pad * 2) - 1;
+            if (minXp > left && maxXp < right && minYp > top && maxYp < bottom)
+                return false;
+            if (minXp <= left)
+            {
+                int y0 = Math.Max(minYp, top), y1 = Math.Min(maxYp, bottom);
+                for (int y = y0; y <= y1; y++)
+                    if (rawPad[left, y]) return true;
+            }
+            if (maxXp >= right)
+            {
+                int y0 = Math.Max(minYp, top), y1 = Math.Min(maxYp, bottom);
+                for (int y = y0; y <= y1; y++)
+                    if (rawPad[right, y]) return true;
+            }
+            if (minYp <= top)
+            {
+                int x0 = Math.Max(minXp, left), x1 = Math.Min(maxXp, right);
+                for (int x = x0; x <= x1; x++)
+                    if (rawPad[x, top]) return true;
+            }
+            if (maxYp >= bottom)
+            {
+                int x0 = Math.Max(minXp, left), x1 = Math.Min(maxXp, right);
+                for (int x = x0; x <= x1; x++)
+                    if (rawPad[x, bottom]) return true;
+            }
+            return false;
         }
 
         private static List<Comp> Label(bool[,] filled, bool[,] raw, int w, int h)
