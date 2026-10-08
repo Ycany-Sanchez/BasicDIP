@@ -9,150 +9,107 @@ namespace WinFormsApp1
 
     public static class CoinCounter
     {
-        private static readonly double[] Values = { 0.05, 0.10, 0.25, 1.0, 5.0 };
-        private static readonly string[] Names = { "5c", "10c", "25c", "P1", "P5" };
+        static readonly double[] Values = { 0.05, 0.10, 0.25, 1.0, 5.0 };
+        static readonly string[] Names = { "5c", "10c", "25c", "P1", "P5" };
 
-        /// <summary>Human-readable reject log from the last <see cref="CountCoins"/> call.</summary>
         public static IReadOnlyList<string> LastRejects { get; private set; } = Array.Empty<string>();
 
-        public static CoinCountResult CountCoins(Bitmap source)
+        public static CoinCountResult CountCoins(Bitmap src)
         {
-            int w = source.Width, h = source.Height;
-            byte[,] gray = ToGrayscale(source);
-            int thr = OtsuThreshold(gray, w, h);
-            bool[,] fg = new bool[w, h];
+            int w = src.Width, h = src.Height;
+            byte[,] g = Gray(src, w, h);
+            int thr = Otsu(g, w, h);
+
+            // Foreground, padded so the close can't push edge coins into the border.
+            int r = Math.Clamp(Math.Min(w, h) / 220, 2, 7);
+            int pad = r + 6, wp = w + pad * 2, hp = h + pad * 2;
+            var fg = new bool[wp, hp];
             for (int y = 0; y < h; y++)
                 for (int x = 0; x < w; x++)
-                    fg[x, y] = gray[x, y] < thr;
+                    fg[x + pad, y + pad] = g[x, y] < thr;
+            var raw = (bool[,])fg.Clone();
 
-            // Close small gaps/lettering via box close using integral image.
-            // Radius adapts to image scale: big scans need wide close to
-            // merge coin lettering, small dense shots need narrow to avoid
-            // fusing neighboring coins into one blob.
-            int closeR = Math.Clamp(Math.Min(w, h) / 220, 2, 7);
-            // Pad with background so edge coins don't get pushed into the
-            // image border by the close (the left 25c in coins.png sits ~2px
-            // from the edge; dilate r=2 made it touch and get rejected).
-            int pad = closeR + 6;
-            int wp = w + pad * 2, hp = h + pad * 2;
-            bool[,] fgPad = new bool[wp, hp];
-            for (int y = 0; y < h; y++)
-                for (int x = 0; x < w; x++)
-                    fgPad[x + pad, y + pad] = fg[x, y];
-            bool[,] rawPad = (bool[,])fgPad.Clone();
-            bool[,] closedPad = BoxClose(fgPad, wp, hp, closeR);
-            // Fill holes for outer shape, but keep raw copy for hole detection.
-            bool[,] filledPad = FillHoles(closedPad, wp, hp);
-
-            var compsPad = Label(filledPad, closedPad, wp, hp);
-            // Map back to original coords for annotation/rejects.
-            var comps = new List<Comp>();
-            foreach (var c in compsPad)
-            {
-                c.MinX -= pad; c.MinY -= pad; c.MaxX -= pad; c.MaxY -= pad;
-                // Truly truncated only if raw coin pixels touch the photo edge.
-                c.TouchesBorder = TouchesRawBorder(rawPad, wp, hp, pad, c);
-                comps.Add(c);
-            }
-            // Drop specks, border artifacts and non-coin blobs (caption text:
-            // tiny bbox fill ratio). Split merged touching coins via aspect.
-            double imgArea = (double)w * h;
-            var rejects = new List<string>();
-            var blobs = new List<Comp>();
+            var comps = Label(Fill(Close(fg, wp, hp, r), wp, hp), wp, hp);
             foreach (var c in comps)
             {
-                int bw0 = c.MaxX - c.MinX + 1, bh0 = c.MaxY - c.MinY + 1;
-                if (c.FilledArea < imgArea * 0.0004) { rejects.Add($"speck area={c.FilledArea} bbox=({c.MinX},{c.MinY})-({c.MaxX},{c.MaxY})"); continue; }
-                if (c.TouchesBorder) { rejects.Add($"border d~{c.Diameter:F0} bbox=({c.MinX},{c.MinY})-({c.MaxX},{c.MaxY})"); continue; }
-                double fillRatio = c.FilledArea / (double)(bw0 * bh0);
-                if (fillRatio < 0.55) { rejects.Add($"non-round fill={fillRatio:F2} area={c.FilledArea} bbox=({c.MinX},{c.MinY})-({c.MaxX},{c.MaxY})"); continue; }
-                double aspect = Math.Max(bw0, bh0) / (double)Math.Min(bw0, bh0);
-                if (aspect > 1.4)
+                c.MinX -= pad; c.MinY -= pad; c.MaxX -= pad; c.MaxY -= pad;
+                c.Edge = Cut(raw, w, h, pad, c);
+            }
+
+            double area = (double)w * h;
+            var rejects = new List<string>();
+            var blobs = new List<Blob>();
+            foreach (var c in comps)
+            {
+                int bw = c.MaxX - c.MinX + 1, bh = c.MaxY - c.MinY + 1;
+                if (c.Area < area * 0.0004) { rejects.Add($"speck {c.Area} [{c.MinX},{c.MinY}-{c.MaxX},{c.MaxY}]"); continue; }
+                if (c.Edge) { rejects.Add($"border d~{c.D:F0} [{c.MinX},{c.MinY}-{c.MaxX},{c.MaxY}]"); continue; }
+                if (c.Area / (double)(bw * bh) < 0.55) { rejects.Add($"flat [{c.MinX},{c.MinY}-{c.MaxX},{c.MaxY}]"); continue; }
+                if (Math.Max(bw, bh) / (double)Math.Min(bw, bh) > 1.4)
                 {
-                    double single = Math.PI * Math.Pow(Math.Min(bw0, bh0) / 2.0, 2);
-                    c.SplitCount = Math.Clamp((int)Math.Round(c.FilledArea / single), 2, 4);
-                    c.DiameterOverride = Math.Sqrt(4.0 * (c.FilledArea / (double)c.SplitCount) / Math.PI);
+                    double single = Math.PI * Math.Pow(Math.Min(bw, bh) / 2.0, 2);
+                    c.N = Math.Clamp((int)Math.Round(c.Area / single), 2, 4);
+                    c.D = Math.Sqrt(4 * (c.Area / (double)c.N) / Math.PI);
                 }
                 blobs.Add(c);
             }
             LastRejects = rejects;
             if (blobs.Count == 0)
-                return new CoinCountResult(0, 0, 0, 0, 0, 0, new Bitmap(source), "No coins found.");
+                return new CoinCountResult(0, 0, 0, 0, 0, 0, new Bitmap(src), "No coins found.");
 
-            // One entry per coin (splits contribute N identical entries),
-            // sorted by diameter, split into 5 groups at 4 largest gaps.
-            var entries = new List<(Comp owner, double d)>();
-            foreach (var c in blobs)
-                for (int k = 0; k < Math.Max(1, c.SplitCount); k++)
-                    entries.Add((c, c.DEff));
-            entries.Sort((a, b) => a.d.CompareTo(b.d));
-            int[] bounds = FindGroupBounds(entries.Select(e => e.d).ToArray(), 5);
+            // One row per coin, sorted by size, cut at the 4 biggest gaps.
+            var ds = blobs.SelectMany(b => Enumerable.Repeat((b, b.D), Math.Max(1, b.N))).OrderBy(e => e.Item2).ToList();
+            var cuts = ds.Zip(ds.Skip(1), (a, b) => b.Item2 - a.Item2)
+                .Select((gap, i) => (gap, i)).OrderByDescending(t => t.gap).Take(4).Select(t => t.i).OrderBy(i => i).ToArray();
             int[] counts = new int[5];
-            for (int i = 0; i < entries.Count; i++)
+            for (int i = 0; i < ds.Count; i++)
             {
-                int g = GroupOf(i, bounds);
-                entries[i].owner.Group = g;
-                counts[g]++;
+                int grp = Array.FindIndex(cuts, c => i <= c);
+                ds[i].b.Group = grp < 0 ? 4 : grp;
+                counts[ds[i].b.Group]++;
             }
+            double total = counts.Select((n, i) => n * Values[i]).Sum();
 
-            // 5c cross-check: smallest group should hold the holed coins.
-            // (Hole flag kept for summary; size drives the verdict per evenly-spaced spec.)
-            int nCoins = entries.Count;
-            double total = counts[0] * Values[0] + counts[1] * Values[1] + counts[2] * Values[2]
-                + counts[3] * Values[3] + counts[4] * Values[4];
-
-            Bitmap annotated = new Bitmap(source);
-            using (var g = Graphics.FromImage(annotated))
+            var out_ = new Bitmap(src);
+            using (var gx = Graphics.FromImage(out_))
             using (var pen = new Pen(Color.Red, Math.Max(2, w / 400)))
             using (var font = new Font("Arial", Math.Max(10, w / 60)))
-            using (var brush = new SolidBrush(Color.Yellow))
-            {
+            using (var br = new SolidBrush(Color.Yellow))
                 foreach (var c in blobs)
                 {
-                    if (c.SplitCount > 1)
+                    if (c.N > 1)
                     {
-                        // Draw N side-by-side circles along the long axis.
-                        int bw = c.MaxX - c.MinX + 1, bh = c.MaxY - c.MinY + 1;
-                        bool vertical = bh >= bw;
-                        double d = c.DEff;
+                        bool vert = (c.MaxY - c.MinY) >= (c.MaxX - c.MinX);
                         double cx = (c.MinX + c.MaxX) / 2.0, cy = (c.MinY + c.MaxY) / 2.0;
-                        for (int k = 0; k < c.SplitCount; k++)
+                        for (int k = 0; k < c.N; k++)
                         {
-                            double off = (k - (c.SplitCount - 1) / 2.0) * d;
-                            float x = (float)(vertical ? cx - d / 2 : cx + off - d / 2);
-                            float y = (float)(vertical ? cy + off - d / 2 : cy - d / 2);
-                            g.DrawEllipse(pen, x, y, (float)d, (float)d);
+                            double off = (k - (c.N - 1) / 2.0) * c.D;
+                            float x = (float)(vert ? cx - c.D / 2 : cx + off - c.D / 2);
+                            float y = (float)(vert ? cy + off - c.D / 2 : cy - c.D / 2);
+                            gx.DrawEllipse(pen, x, y, (float)c.D, (float)c.D);
                         }
-                        g.DrawString(Names[c.Group] + "x" + c.SplitCount, font, brush, c.MinX, c.MinY);
+                        gx.DrawString(Names[c.Group] + "x" + c.N, font, br, c.MinX, c.MinY);
                     }
                     else
                     {
-                        g.DrawEllipse(pen, c.MinX, c.MinY, c.MaxX - c.MinX, c.MaxY - c.MinY);
-                        g.DrawString(Names[c.Group], font, brush, c.MinX, c.MinY);
+                        gx.DrawEllipse(pen, c.MinX, c.MinY, c.MaxX - c.MinX, c.MaxY - c.MinY);
+                        gx.DrawString(Names[c.Group], font, br, c.MinX, c.MinY);
                     }
                 }
-            }
 
-            string summary = $"5c:{counts[0]} 10c:{counts[1]} 25c:{counts[2]} P1:{counts[3]} P5:{counts[4]} = P{total:F2} (n={nCoins}, otsu={thr})";
-            return new CoinCountResult(counts[0], counts[1], counts[2], counts[3], counts[4], total, annotated, summary);
+            string s = $"5c:{counts[0]} 10c:{counts[1]} 25c:{counts[2]} P1:{counts[3]} P5:{counts[4]} = P{total:F2} (n={ds.Count}, otsu={thr})";
+            return new CoinCountResult(counts[0], counts[1], counts[2], counts[3], counts[4], total, out_, s);
         }
 
-        private sealed class Comp
+        sealed class Blob
         {
-            public int FilledArea; public int RawArea; public int MinX = int.MaxValue;
-            public int MinY = int.MaxValue; public int MaxX; public int MaxY;
-            public bool TouchesBorder; public int Group;
-            public double Diameter => Math.Sqrt(4.0 * FilledArea / Math.PI);
-            public double? DiameterOverride;
-            public double DEff => DiameterOverride ?? Diameter;
-            public bool HasHole => (FilledArea - RawArea) > FilledArea * 0.02;
-            /// <summary>Set on original blobs merged from N coins.</summary>
-            public int SplitCount;
+            public int Area, MinX = int.MaxValue, MinY = int.MaxValue, MaxX, MaxY, Group, N;
+            public bool Edge;
+            public double D;
         }
 
-        private static byte[,] ToGrayscale(Bitmap bmp)
+        static byte[,] Gray(Bitmap bmp, int w, int h)
         {
-            int w = bmp.Width, h = bmp.Height;
             var gray = new byte[w, h];
             var data = bmp.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.ReadOnly, PixelFormat.Format24bppRgb);
             try
@@ -176,7 +133,7 @@ namespace WinFormsApp1
             return gray;
         }
 
-        private static int OtsuThreshold(byte[,] gray, int w, int h)
+        static int Otsu(byte[,] gray, int w, int h)
         {
             int[] hist = new int[256];
             for (int y = 0; y < h; y++)
@@ -200,74 +157,46 @@ namespace WinFormsApp1
             return thr;
         }
 
-        private static bool[,] BoxClose(bool[,] a, int w, int h, int r)
+        static bool[,] Close(bool[,] a, int w, int h, int r)
         {
-            return BoxErode(BoxDilate(a, w, h, r), w, h, r);
-        }
-
-        private static bool[,] BoxDilate(bool[,] a, int w, int h, int r)
-        {
-            long[,] integ = Integral(a, w, h);
-            var out_ = new bool[w, h];
-            for (int y = 0; y < h; y++)
-                for (int x = 0; x < w; x++)
-                    out_[x, y] = BoxSum(integ, w, h, x - r, y - r, x + r, y + r) > 0;
-            return out_;
-        }
-
-        private static bool[,] BoxErode(bool[,] a, int w, int h, int r)
-        {
-            long[,] integ = Integral(a, w, h);
-            var out_ = new bool[w, h];
-            for (int y = 0; y < h; y++)
-                for (int x = 0; x < w; x++)
-                {
-                    int x0 = Math.Max(0, x - r), y0 = Math.Max(0, y - r);
-                    int x1 = Math.Min(w - 1, x + r), y1 = Math.Min(h - 1, y + r);
-                    long full = (long)(x1 - x0 + 1) * (y1 - y0 + 1);
-                    out_[x, y] = BoxSum(integ, w, h, x0, y0, x1, y1) == full;
-                }
-            return out_;
-        }
-
-        private static long[,] Integral(bool[,] a, int w, int h)
-        {
-            var integ = new long[h + 1, w + 1];
-            for (int y = 0; y < h; y++)
+            long[,] integ(bool[,] s)
             {
-                long row = 0;
+                var t = new long[h + 1, w + 1];
+                for (int y = 0; y < h; y++)
+                {
+                    long row = 0;
+                    for (int x = 0; x < w; x++) { row += s[x, y] ? 1 : 0; t[y + 1, x + 1] = t[y, x + 1] + row; }
+                }
+                return t;
+            }
+            long sum(long[,] t, int x0, int y0, int x1, int y1)
+            {
+                x0 = Math.Max(0, x0); y0 = Math.Max(0, y0); x1 = Math.Min(w - 1, x1); y1 = Math.Min(h - 1, y1);
+                return t[y1 + 1, x1 + 1] - t[y0, x1 + 1] - t[y1 + 1, x0] + t[y0, x0];
+            }
+            var di = integ(a);
+            var d = new bool[w, h];
+            for (int y = 0; y < h; y++)
+                for (int x = 0; x < w; x++)
+                    d[x, y] = sum(di, x - r, y - r, x + r, y + r) > 0;
+            var ei = integ(d);
+            var e = new bool[w, h];
+            for (int y = 0; y < h; y++)
                 for (int x = 0; x < w; x++)
                 {
-                    row += a[x, y] ? 1 : 0;
-                    integ[y + 1, x + 1] = integ[y, x + 1] + row;
+                    int x0 = Math.Max(0, x - r), y0 = Math.Max(0, y - r), x1 = Math.Min(w - 1, x + r), y1 = Math.Min(h - 1, y + r);
+                    e[x, y] = sum(ei, x0, y0, x1, y1) == (long)(x1 - x0 + 1) * (y1 - y0 + 1);
                 }
-            }
-            return integ;
+            return e;
         }
 
-        private static long BoxSum(long[,] integ, int w, int h, int x0, int y0, int x1, int y1)
+        static bool[,] Fill(bool[,] fg, int w, int h)
         {
-            x0 = Math.Max(0, x0); y0 = Math.Max(0, y0);
-            x1 = Math.Min(w - 1, x1); y1 = Math.Min(h - 1, y1);
-            return integ[y1 + 1, x1 + 1] - integ[y0, x1 + 1] - integ[y1 + 1, x0] + integ[y0, x0];
-        }
-
-        private static bool[,] FillHoles(bool[,] fg, int w, int h)
-        {
-            // Flood background from borders; whatever is neither fg nor
-            // background-connected is a hole -> fill it.
             var seen = new bool[w, h];
             var q = new Queue<(int, int)>();
-            for (int x = 0; x < w; x++)
-            {
-                if (!fg[x, 0]) { seen[x, 0] = true; q.Enqueue((x, 0)); }
-                if (!fg[x, h - 1]) { seen[x, h - 1] = true; q.Enqueue((x, h - 1)); }
-            }
-            for (int y = 0; y < h; y++)
-            {
-                if (!fg[0, y] && !seen[0, y]) { seen[0, y] = true; q.Enqueue((0, y)); }
-                if (!fg[w - 1, y] && !seen[w - 1, y]) { seen[w - 1, y] = true; q.Enqueue((w - 1, y)); }
-            }
+            void push(int x, int y) { if (!fg[x, y] && !seen[x, y]) { seen[x, y] = true; q.Enqueue((x, y)); } }
+            for (int x = 0; x < w; x++) { push(x, 0); push(x, h - 1); }
+            for (int y = 0; y < h; y++) { push(0, y); push(w - 1, y); }
             int[] dx = { 1, -1, 0, 0 }, dy = { 0, 0, 1, -1 };
             while (q.Count > 0)
             {
@@ -275,111 +204,61 @@ namespace WinFormsApp1
                 for (int k = 0; k < 4; k++)
                 {
                     int nx = cx + dx[k], ny = cy + dy[k];
-                    if (nx < 0 || ny < 0 || nx >= w || ny >= h || seen[nx, ny] || fg[nx, ny]) continue;
-                    seen[nx, ny] = true;
-                    q.Enqueue((nx, ny));
+                    if ((uint)nx < (uint)w && (uint)ny < (uint)h && !seen[nx, ny] && !fg[nx, ny]) { seen[nx, ny] = true; q.Enqueue((nx, ny)); }
                 }
             }
-            var out_ = new bool[w, h];
+            var o = new bool[w, h];
             for (int y = 0; y < h; y++)
                 for (int x = 0; x < w; x++)
-                    out_[x, y] = fg[x, y] || !seen[x, y];
-            return out_;
+                    o[x, y] = fg[x, y] || !seen[x, y];
+            return o;
         }
 
-        private static bool TouchesRawBorder(bool[,] rawPad, int wp, int hp, int pad, Comp c)
+        static bool Cut(bool[,] raw, int w, int h, int pad, Blob c)
         {
-            // Blob bbox is in original coords; convert to padded for raw lookup.
-            int minXp = c.MinX + pad, maxXp = c.MaxX + pad;
-            int minYp = c.MinY + pad, maxYp = c.MaxY + pad;
-            // Original photo edges in padded coords.
-            int left = pad, right = pad + (wp - pad * 2) - 1;
-            int top = pad, bottom = pad + (hp - pad * 2) - 1;
-            if (minXp > left && maxXp < right && minYp > top && maxYp < bottom)
-                return false;
-            if (minXp <= left)
-            {
-                int y0 = Math.Max(minYp, top), y1 = Math.Min(maxYp, bottom);
-                for (int y = y0; y <= y1; y++)
-                    if (rawPad[left, y]) return true;
-            }
-            if (maxXp >= right)
-            {
-                int y0 = Math.Max(minYp, top), y1 = Math.Min(maxYp, bottom);
-                for (int y = y0; y <= y1; y++)
-                    if (rawPad[right, y]) return true;
-            }
-            if (minYp <= top)
-            {
-                int x0 = Math.Max(minXp, left), x1 = Math.Min(maxXp, right);
-                for (int x = x0; x <= x1; x++)
-                    if (rawPad[x, top]) return true;
-            }
-            if (maxYp >= bottom)
-            {
-                int x0 = Math.Max(minXp, left), x1 = Math.Min(maxXp, right);
-                for (int x = x0; x <= x1; x++)
-                    if (rawPad[x, bottom]) return true;
-            }
+            // True only if pre-close pixels touch the photo edge inside the bbox.
+            if (c.MinX > 0 && c.MaxX < w - 1 && c.MinY > 0 && c.MaxY < h - 1) return false;
+            if (c.MinX <= 0) for (int y = Math.Max(0, c.MinY); y <= Math.Min(h - 1, c.MaxY); y++) if (raw[pad, y + pad]) return true;
+            if (c.MaxX >= w - 1) for (int y = Math.Max(0, c.MinY); y <= Math.Min(h - 1, c.MaxY); y++) if (raw[pad + w - 1, y + pad]) return true;
+            if (c.MinY <= 0) for (int x = Math.Max(0, c.MinX); x <= Math.Min(w - 1, c.MaxX); x++) if (raw[x + pad, pad]) return true;
+            if (c.MaxY >= h - 1) for (int x = Math.Max(0, c.MinX); x <= Math.Min(w - 1, c.MaxX); x++) if (raw[x + pad, pad + h - 1]) return true;
             return false;
         }
 
-        private static List<Comp> Label(bool[,] filled, bool[,] raw, int w, int h)
+        static List<Blob> Label(bool[,] f, int w, int h)
         {
-            int[,] id = new int[w, h];
+            var id = new int[w, h];
             for (int y = 0; y < h; y++)
                 for (int x = 0; x < w; x++)
                     id[x, y] = -1;
-            var comps = new List<Comp>();
-            int[] dx = { 1, -1, 0, 0 }, dy = { 0, 0, 1, -1 };
+            var out_ = new List<Blob>();
             var q = new Queue<(int, int)>();
+            int[] dx = { 1, -1, 0, 0 }, dy = { 0, 0, 1, -1 };
             for (int sy = 0; sy < h; sy++)
                 for (int sx = 0; sx < w; sx++)
                 {
-                    if (!filled[sx, sy] || id[sx, sy] != -1) continue;
-                    var c = new Comp();
-                    int ci = comps.Count;
-                    comps.Add(c);
+                    if (!f[sx, sy] || id[sx, sy] != -1) continue;
+                    var c = new Blob();
+                    id[sx, sy] = out_.Count;
+                    out_.Add(c);
                     q.Enqueue((sx, sy));
-                    id[sx, sy] = ci;
                     while (q.Count > 0)
                     {
                         var (cx, cy) = q.Dequeue();
-                        c.FilledArea++;
-                        if (raw[cx, cy]) c.RawArea++;
+                        c.Area++;
                         if (cx < c.MinX) c.MinX = cx;
                         if (cy < c.MinY) c.MinY = cy;
                         if (cx > c.MaxX) c.MaxX = cx;
                         if (cy > c.MaxY) c.MaxY = cy;
-                        if (cx == 0 || cy == 0 || cx == w - 1 || cy == h - 1) c.TouchesBorder = true;
                         for (int k = 0; k < 4; k++)
                         {
                             int nx = cx + dx[k], ny = cy + dy[k];
-                            if (nx < 0 || ny < 0 || nx >= w || ny >= h || !filled[nx, ny] || id[nx, ny] != -1) continue;
-                            id[nx, ny] = ci;
-                            q.Enqueue((nx, ny));
+                            if ((uint)nx < (uint)w && (uint)ny < (uint)h && f[nx, ny] && id[nx, ny] == -1) { id[nx, ny] = id[cx, cy]; q.Enqueue((nx, ny)); }
                         }
                     }
+                    c.D = Math.Sqrt(4.0 * c.Area / Math.PI);
                 }
-            return comps;
-        }
-
-        private static int[] FindGroupBounds(double[] sorted, int groups)
-        {
-            // Indices of the (groups-1) largest gaps between consecutive diameters.
-            var gaps = new List<(double gap, int idx)>();
-            for (int i = 0; i < sorted.Length - 1; i++)
-                gaps.Add((sorted[i + 1] - sorted[i], i));
-            gaps.Sort((a, b) => b.gap.CompareTo(a.gap));
-            var bounds = gaps.Take(groups - 1).Select(g => g.idx).OrderBy(i => i).ToArray();
-            return bounds;
-        }
-
-        private static int GroupOf(int sortedIndex, int[] bounds)
-        {
-            for (int g = 0; g < bounds.Length; g++)
-                if (sortedIndex <= bounds[g]) return g;
-            return bounds.Length;
+            return out_;
         }
     }
 }
